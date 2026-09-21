@@ -1,0 +1,11 @@
+{
+  "name": "harness-audit",
+  "version": "0.1.0",
+  "description": "Audit a Claude Code and Codex CLI harness for overlap, dead weight, conflicts, startup cost and clutter.",
+  "license": "MIT",
+  "repository": "github:gustavo-cerqueira/harness-audit",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test" }
+}
