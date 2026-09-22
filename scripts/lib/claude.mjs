@@ -41,21 +41,49 @@ function agentsIn(dir, source, prefix, loaded) {
   });
 }
 
-function flattenHooks(hooksObj, source, into) {
+function flattenHooks(hooksObj, source, hookPath, into) {
   for (const [event, entries] of Object.entries(hooksObj ?? {})) {
     for (const entry of entries ?? []) {
       for (const h of entry.hooks ?? []) {
-        (into[event] ??= []).push({ command: h.command ?? h.type ?? '', matcher: entry.matcher ?? '', source });
+        (into[event] ??= []).push({ command: h.command ?? h.type ?? '', matcher: entry.matcher ?? '', source, path: hookPath });
       }
     }
   }
 }
 
-function mcpFrom(obj, source, into) {
+function mcpFrom(obj, source, configPath, into) {
   for (const [name, cfg] of Object.entries(obj ?? {})) {
+    if (!cfg || typeof cfg !== 'object') continue;
     const transport = cfg.url || cfg.type === 'http' || cfg.type === 'sse' ? 'http' : 'stdio';
-    into.push({ name, source, transport, command: cfg.url ?? [cfg.command, ...(cfg.args ?? [])].filter(Boolean).join(' '), enabled: cfg.disabled !== true });
+    into.push({ name, source, path: configPath, transport, command: cfg.url ?? [cfg.command, ...(cfg.args ?? [])].filter(Boolean).join(' '), enabled: cfg.disabled !== true });
   }
+}
+
+function ancestors(cwd) {
+  const out = [];
+  for (let p = path.resolve(cwd); ; p = path.dirname(p)) {
+    out.unshift(p);
+    if (path.dirname(p) === p) return out;
+  }
+}
+
+function settingFor(key, layers) {
+  let found = null;
+  for (const layer of layers) if (Object.hasOwn(layer.config.enabledPlugins ?? {}, key)) found = { value: layer.config.enabledPlugins[key], source: layer.source, path: layer.path };
+  return found;
+}
+
+function selectInstall(key, installs, setting, cwd, warnings) {
+  const live = (Array.isArray(installs) ? installs : []).filter(i => i?.installPath && fs.existsSync(i.installPath));
+  if (!live.length) { warnings.push({ path: key, message: 'plugin install path missing' }); return null; }
+  const projectSetting = setting?.source.startsWith('project:');
+  const projectScopes = new Set(['project', 'local']);
+  const userInstalls = live.filter(i => !projectScopes.has(i.scope));
+  const currentProjectInstalls = live.filter(i => projectScopes.has(i.scope) && i.projectPath === cwd);
+  const candidates = projectSetting ? (currentProjectInstalls.length ? currentProjectInstalls : userInstalls) : userInstalls;
+  if (!candidates.length) { warnings.push({ path: key, message: projectSetting ? 'no install matches the current project scope' : 'no user-scoped plugin install found' }); return null; }
+  if (candidates.length !== 1) { warnings.push({ path: key, message: 'multiple applicable plugin installs; active version is unknown' }); return null; }
+  return candidates[0];
 }
 
 function instructionFile(p) {
@@ -121,25 +149,35 @@ export function collectClaude(roots) {
   const settings = readJson(path.join(root, 'settings.json'), warnings) ?? {};
   const settingsLocal = readJson(path.join(root, 'settings.local.json'), warnings) ?? {};
   const projSettings = readJson(path.join(roots.cwd, '.claude', 'settings.json'), warnings) ?? {};
+  const projSettingsLocal = readJson(path.join(roots.cwd, '.claude', 'settings.local.json'), warnings) ?? {};
   const claudeJson = readJson(roots.claudeJson, warnings) ?? {};
   const installed = readJson(path.join(root, 'plugins', 'installed_plugins.json'), warnings)?.plugins ?? {};
-  const enabledPlugins = { ...settings.enabledPlugins, ...settingsLocal.enabledPlugins, ...projSettings.enabledPlugins };
+  const layers = [
+    { config: settings, source: 'settings.json', path: path.join(root, 'settings.json') },
+    { config: settingsLocal, source: 'settings.local.json', path: path.join(root, 'settings.local.json') },
+    { config: projSettings, source: 'project:.claude/settings.json', path: path.join(roots.cwd, '.claude', 'settings.json') },
+    { config: projSettingsLocal, source: 'project:.claude/settings.local.json', path: path.join(roots.cwd, '.claude', 'settings.local.json') },
+  ];
 
   const plugins = [], skills = [], agents = [], hooks = {}, mcpServers = [];
   for (const [key, installs] of Object.entries(installed)) {
     const [name, marketplace] = key.split('@');
-    const inst = installs?.[0];
-    if (!inst?.installPath || !fs.existsSync(inst.installPath)) { warnings.push({ path: inst?.installPath ?? key, message: 'plugin install path missing' }); continue; }
-    const enabled = enabledPlugins[key] === true;
+    const setting = settingFor(key, layers);
+    const inst = selectInstall(key, installs, setting, roots.cwd, warnings);
+    if (!inst) {
+      plugins.push({ name, marketplace, enabled: setting?.value === true ? true : setting?.value === false ? false : null, enabledSource: setting?.source ?? null, enabledPath: setting?.path ?? null, path: null, version: null, installedAt: null, skills: null, agents: null, hooks: null, mcpServers: null, loaded: null, origin: 'installed', coverage: 'active plugin install scope is unknown' });
+      continue;
+    }
+    const enabled = setting?.value === true;
     const src = `plugin:${name}`;
     const pSkills = skillsIn(path.join(inst.installPath, 'skills'), src, name, enabled);
     const pAgents = agentsIn(path.join(inst.installPath, 'agents'), src, name, enabled);
     const pHooks = readJson(path.join(inst.installPath, 'hooks', 'hooks.json'), warnings)?.hooks ?? {};
     const pMcp = readJson(path.join(inst.installPath, '.mcp.json'), warnings)?.mcpServers ?? {};
     const hookCount = Object.values(pHooks).flat().reduce((n, e) => n + (e.hooks?.length ?? 0), 0);
-    plugins.push({ name, marketplace, enabled, path: inst.installPath, version: inst.version ?? null, installedAt: inst.installedAt ?? null, skills: pSkills.length, agents: pAgents.length, hooks: hookCount, mcpServers: Object.keys(pMcp).length, origin: 'installed' });
+    plugins.push({ name, marketplace, enabled, enabledSource: setting?.source ?? null, enabledPath: setting?.path ?? null, path: inst.installPath, version: inst.version ?? null, installedAt: inst.installedAt ?? null, skills: pSkills.length, agents: pAgents.length, hooks: hookCount, mcpServers: Object.keys(pMcp).length, loaded: enabled, origin: 'installed' });
     skills.push(...pSkills); agents.push(...pAgents);
-    if (enabled) { flattenHooks(pHooks, src, hooks); mcpFrom(pMcp, src, mcpServers); }
+    if (enabled) { flattenHooks(pHooks, src, path.join(inst.installPath, 'hooks', 'hooks.json'), hooks); mcpFrom(pMcp, src, path.join(inst.installPath, '.mcp.json'), mcpServers); }
   }
 
   // plugins synced from claude.ai: plugins/synced/<sync-id>/manifest.json + plugins/synced/<sync-id>/<name>/
@@ -164,9 +202,9 @@ export function collectClaude(roots) {
         const pHooks = readJson(path.join(pluginPath, 'hooks', 'hooks.json'), warnings)?.hooks ?? {};
         const pMcp = readJson(path.join(pluginPath, '.mcp.json'), warnings)?.mcpServers ?? {};
         const hookCount = Object.values(pHooks).flat().reduce((n, e) => n + (e.hooks?.length ?? 0), 0);
-        plugins.push({ name, marketplace: entry.marketplaceName ?? 'synced', enabled, path: pluginPath, version: entry.version ?? null, installedAt: entry.updatedAt ?? null, skills: pSkills.length, agents: pAgents.length, hooks: hookCount, mcpServers: Object.keys(pMcp).length, origin: 'synced' });
+        plugins.push({ name, marketplace: entry.marketplaceName ?? 'synced', enabled, enabledSource: 'synced-manifest', enabledPath: manifestPath, path: pluginPath, version: entry.version ?? null, installedAt: entry.updatedAt ?? null, skills: pSkills.length, agents: pAgents.length, hooks: hookCount, mcpServers: Object.keys(pMcp).length, loaded: enabled, origin: 'synced' });
         skills.push(...pSkills); agents.push(...pAgents);
-        if (enabled) { flattenHooks(pHooks, src, hooks); mcpFrom(pMcp, src, mcpServers); }
+        if (enabled) { flattenHooks(pHooks, src, path.join(pluginPath, 'hooks', 'hooks.json'), hooks); mcpFrom(pMcp, src, path.join(pluginPath, '.mcp.json'), mcpServers); }
       }
     }
   }
@@ -175,18 +213,19 @@ export function collectClaude(roots) {
   skills.push(...skillsIn(path.join(roots.cwd, '.claude', 'skills'), 'project', '', true));
   agents.push(...agentsIn(path.join(root, 'agents'), 'user', '', true));
   agents.push(...agentsIn(path.join(roots.cwd, '.claude', 'agents'), 'project', '', true));
-  flattenHooks(settings.hooks, 'settings.json', hooks);
-  flattenHooks(settingsLocal.hooks, 'settings.local.json', hooks);
-  flattenHooks(projSettings.hooks, 'project:.claude/settings.json', hooks);
-  mcpFrom(claudeJson.mcpServers, '~/.claude.json', mcpServers);
-  for (const [proj, cfg] of Object.entries(claudeJson.projects ?? {})) mcpFrom(cfg.mcpServers, `~/.claude.json#project:${proj}`, mcpServers);
-  mcpFrom(settings.mcpServers, 'settings.json', mcpServers);
-  mcpFrom(settingsLocal.mcpServers, 'settings.local.json', mcpServers);
-  mcpFrom(readJson(path.join(roots.cwd, '.mcp.json'), warnings)?.mcpServers, 'project:.mcp.json', mcpServers);
+  for (const layer of layers) {
+    flattenHooks(layer.config.hooks, layer.source, layer.path, hooks);
+    mcpFrom(layer.config.mcpServers, layer.source, layer.path, mcpServers);
+  }
+  mcpFrom(claudeJson.mcpServers, '~/.claude.json', roots.claudeJson, mcpServers);
+  mcpFrom(claudeJson.projects?.[roots.cwd]?.mcpServers, `~/.claude.json#project:${roots.cwd}`, roots.claudeJson, mcpServers);
+  const projectMcpPath = path.join(roots.cwd, '.mcp.json');
+  mcpFrom(readJson(projectMcpPath, warnings)?.mcpServers, 'project:.mcp.json', projectMcpPath, mcpServers);
 
-  const instructionFiles = [
-    path.join(root, 'CLAUDE.md'), path.join(roots.cwd, 'CLAUDE.md'), path.join(roots.cwd, 'CLAUDE.local.md'), path.join(roots.cwd, '.claude', 'CLAUDE.md'),
-  ].map(instructionFile).filter(Boolean);
+  const instructionPaths = [path.join(root, 'CLAUDE.md')];
+  for (const dir of ancestors(roots.cwd)) instructionPaths.push(path.join(dir, 'CLAUDE.md'));
+  instructionPaths.push(path.join(roots.cwd, 'CLAUDE.local.md'), path.join(roots.cwd, '.claude', 'CLAUDE.md'));
+  const instructionFiles = [...new Set(instructionPaths)].map(instructionFile).filter(Boolean);
 
   return { root, plugins, skills, agents, hooks, mcpServers, instructionFiles, clutter: clutterIn(root, warnings), warnings };
 }

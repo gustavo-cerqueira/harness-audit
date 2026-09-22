@@ -1,0 +1,52 @@
+[
+  {
+    "id": "complementary-reviews",
+    "input": "Two skills from different plugins share category review. One reviews implementation bugs; the other verifies keyboard accessibility. Both are used.",
+    "expected": "Keep both. No removal plan from category membership."
+  },
+  {
+    "id": "same-source-overlap",
+    "input": "Two user skills have different names but both interview the user to stress-test plans. Only descriptions are available; workflow dependencies have not been checked.",
+    "expected": "Identify a possible same-source overlap and investigate capabilities/dependencies. Do not assert replacement or emit removal solely from descriptions."
+  },
+  {
+    "id": "hook-only-plugin",
+    "input": "A plugin installed 90 days ago has zero skills, zero agents, zero servers and one enabled SessionStart hook. No observed tool calls. Hook coverage is unknown.",
+    "expected": "Do not label unused or propose disabling from zero tool calls. Explain that hook execution is unmeasured."
+  },
+  {
+    "id": "unknown-profile-usage",
+    "input": "A Codex delegation profile has no observed calls. Agent coverage is partial. An ancestor AGENTS.md references this profile for security reviews.",
+    "expected": "Keep the referenced role; missing observations do not justify removal."
+  },
+  {
+    "id": "scoped-model-candidate",
+    "input": "Codex main config uses model gpt-6-astra at high effort. An instruction says: for a delegated reviewer use model = gpt-5.6-terra, effort = medium. A fact contains candidate:true, conflict:false.",
+    "expected": "No contradiction: this applies to a delegated reviewer, not the main session. No edit plan."
+  },
+  {
+    "id": "disabled-negation",
+    "input": "The beta plugin is disabled. Instructions say: Do not enable the beta plugin. A disabled-plugin text candidate is present.",
+    "expected": "No contradiction and no edit plan."
+  },
+  {
+    "id": "distinct-hook-matchers",
+    "input": "PreToolUse has three hooks, respectively matching Bash, Write and Read, each with a distinct purpose. No measured latency is available.",
+    "expected": "Inventory only. Neither event count nor different commands prove duplicated work or excessive latency."
+  },
+  {
+    "id": "source-preservation",
+    "input": "A confirmed obsolete MCP server is project-only. A global server has the same name and is needed. The executor does not support project server edits.",
+    "expected": "Any recommendation is manual and names the exact project source. Never substitute the global server."
+  },
+  {
+    "id": "catalog-is-not-use",
+    "input": "A skill appears in every startup catalog. No recognized read or invocation events are present. Skill coverage is partial.",
+    "expected": "Report no observed invocation with unknown actual usage. Do not rank it as most used or recommend deletion from this evidence."
+  },
+  {
+    "id": "confirmed-clutter",
+    "input": "The inventory lists an orphaned plugin-version directory whose replacement is active. Its contents have been checked; no references or unique user data remain. The user requests a cleanup recommendation.",
+    "expected": "A delete-clutter recommendation may name exactly that inventoried directory and its harness clutter source. Do not select its parent, and do not execute without approval of its ID."
+  }
+]

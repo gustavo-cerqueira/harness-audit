@@ -9,6 +9,7 @@ import { collectClaude } from './lib/claude.mjs';
 import { collectCodex } from './lib/codex.mjs';
 import { usageClaude, usageCodex } from './lib/usage.mjs';
 import { startupCost, extractFacts } from './lib/analysis.mjs';
+import { snapshotTargets } from './lib/snapshot.mjs';
 
 const version = (cmd) => { try { return execFileSync(cmd, ['--version'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\n')[0]; } catch { return null; } };
 const fmt = n => n == null ? 'unknown' : n.toLocaleString('en-US');
@@ -18,19 +19,21 @@ export async function runAudit(roots) {
   const sinceMs = Date.now() - roots.days * 86400e3;
   const claude = collectClaude(roots);
   const codex = collectCodex(roots);
+  const snapshotWarnings = [];
+  const targetSnapshots = snapshotTargets(claude, codex, snapshotWarnings);
   const usage = {
-    claude: claude ? await usageClaude(path.join(claude.root, 'projects'), sinceMs) : null,
-    codex: codex ? await usageCodex(path.join(codex.root, 'sessions'), sinceMs, codex.mcpServers.map(s => s.name)) : null,
+    claude: claude ? await usageClaude(path.join(claude.root, 'projects'), sinceMs, claude) : null,
+    codex: codex ? await usageCodex(path.join(codex.root, 'sessions'), sinceMs, codex) : null,
   };
   return {
     generatedAt: new Date().toISOString(),
     days: roots.days,
     cwd: roots.cwd,
     host: { platform: process.platform, node: process.version, claudeCode: version('claude'), codexCli: version('codex') },
-    claude, codex, usage,
+    claude, codex, usage, targetSnapshots,
     startupCost: startupCost(claude, codex),
     facts: extractFacts(claude, codex),
-    warnings: [...(claude?.warnings ?? []), ...(codex?.warnings ?? []), ...(usage.claude?.warnings ?? []), ...(usage.codex?.warnings ?? [])],
+    warnings: [...(claude?.warnings ?? []), ...(codex?.warnings ?? []), ...(usage.claude?.warnings ?? []), ...(usage.codex?.warnings ?? []), ...snapshotWarnings],
   };
 }
 
@@ -40,14 +43,15 @@ export function summary(inv, outFile) {
   if (c) {
     const loaded = c.skills.filter(s => s.loaded).length, off = c.skills.length - loaded;
     lines.push(`Claude Code   skills ${loaded} loaded (${off} in disabled plugins)   agents ${c.agents.filter(a => a.loaded).length}   MCP servers ${c.mcpServers.length}   hooks ${sc.claude.hooks}   sessions(${inv.days}d) ${inv.usage.claude.sessions}`);
-    lines.push(`              startup cost estimate: ${fmt(sc.claude.total)} tokens (skills ${fmt(sc.claude.skillList)} · agents ${fmt(sc.claude.agentList)} · instructions ${fmt(sc.claude.instructionFiles)} · MCP tool names: unknown)`);
+    lines.push(`              discovered metadata estimate: ${fmt(sc.claude.total)} tokens (skills ${fmt(sc.claude.skillList)} · agents ${fmt(sc.claude.agentList)} · instructions ${fmt(sc.claude.instructionFiles)} · tool schemas/runtime injections: excluded)`);
   } else lines.push('Claude Code   not found');
   if (k) {
-    lines.push(`Codex CLI     skills ${k.skills.length}   MCP servers ${k.mcpServers.length}   hooks ${sc.codex.hooks}   sessions(${inv.days}d) ${inv.usage.codex.sessions}   model ${k.config.model ?? '?'} / ${k.config.effort ?? '?'}`);
-    lines.push(`              startup cost estimate: ${fmt(sc.codex.total)} tokens`);
+    lines.push(`Codex CLI     skills ${k.skills.filter(s => s.loaded === true).length} enabled (${k.skills.filter(s => s.loaded !== true).length} disabled/unknown)   agents ${k.agents.filter(a => a.loaded === true).length}   MCP servers ${k.mcpServers.length}   hooks ${sc.codex.hooks}   sessions(${inv.days}d) ${inv.usage.codex.sessions}   model ${k.config.model ?? '?'} / ${k.config.effort ?? '?'}`);
+    lines.push(`              discovered metadata estimate: ${fmt(sc.codex.total)} tokens; not a measured prompt size`);
   } else lines.push('Codex CLI     not found');
   const clutter = [...(c?.clutter ?? []), ...(k?.clutter ?? [])];
-  lines.push(`Conflicts     ${inv.facts.filter(f => f.conflict).length}   Clutter   ${clutter.length} items, ${mb(clutter.reduce((n, x) => n + x.bytes, 0))}   Warnings ${inv.warnings.length}`);
+  lines.push(`Text candidates ${inv.facts.filter(f => f.candidate).length} (require contextual review)   Clutter ${clutter.length} items, ${mb(clutter.reduce((n, x) => n + x.bytes, 0))}   Warnings ${inv.warnings.length}`);
+  lines.push('Usage is observed evidence only; missing calls, unknown scopes and hook activity do not establish that a component is unused.');
   return lines.join('\n') + '\n';
 }
 

@@ -23,9 +23,10 @@ export function resolveRoots(args, env = process.env) {
   if (!Number.isInteger(days) || days <= 0) throw new Error('--days must be a positive integer');
   return {
     home,
-    claudeRoot: args.claudeRoot ?? path.join(home, '.claude'),
-    codexRoot: args.codexRoot ?? path.join(home, '.codex'),
+    claudeRoot: args.claudeRoot ?? (args.home == null ? env.CLAUDE_CONFIG_DIR : undefined) ?? path.join(home, '.claude'),
+    codexRoot: args.codexRoot ?? (args.home == null ? env.CODEX_HOME : undefined) ?? path.join(home, '.codex'),
     claudeJson: args.claudeJson ?? path.join(home, '.claude.json'),
+    agentsRoot: args.agentsRoot ?? path.join(home, '.agents'),
     out: args.out ?? path.join(home, '.harness-audit'),
     days,
     cwd: args.cwd ?? process.cwd(),
