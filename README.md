@@ -72,6 +72,8 @@ npm test
 
 Tests use disposable fixtures. [Report evaluation cases](docs/report-evaluation.md) check the judgement layer separately; passing script tests alone does not establish model recommendation quality.
 
+Contributors: Gustavo Cerqueira, Claude, and Codex.
+
 ## License
 
 MIT
