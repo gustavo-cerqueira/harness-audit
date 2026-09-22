@@ -106,7 +106,7 @@ async function main() {
   const roots = resolveRoots(args);
 
   if (args.listBackups) {
-    for (const b of listBackups(roots.out)) console.log(`${b.stamp}  ${new Date(b.createdAt).toISOString()}  ${b.entries.length} entries`);
+    for (const b of listBackups(roots.out)) console.log(`${b.stamp}  ${new Date(b.createdAt).toISOString()}  ${b.entries.length} entries${b.incomplete ? '  (interrupted)' : ''}`);
     return;
   }
   if (args.undo) {
