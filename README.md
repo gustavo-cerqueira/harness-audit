@@ -18,11 +18,11 @@ Requires Node.js 18+ and Git. Native Claude Code or Codex installations do not n
 
 ```bash
 git clone https://github.com/gustavo-cerqueira/harness-audit ~/.claude/skills/harness-audit
-mkdir -p ~/.codex/skills
-ln -s ~/.claude/skills/harness-audit ~/.codex/skills/harness-audit   # optional, for Codex
+mkdir -p ~/.agents/skills
+ln -s ~/.claude/skills/harness-audit ~/.agents/skills/harness-audit   # optional, for Codex
 ```
 
-Use your configured harness directories if they differ from these defaults.
+Codex reads user skills from `~/.agents/skills`. `~/.codex/skills` is a deprecated location; a skill linked in both appears twice. Use your configured harness directories if they differ from these defaults. Update with `git -C ~/.claude/skills/harness-audit pull`.
 
 ## Use
 
