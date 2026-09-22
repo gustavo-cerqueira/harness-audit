@@ -1,3 +1,5 @@
+> Historical implementation plan (2026-09-21). The [revised design](../specs/2026-09-21-harness-audit-design.md) and current SKILL.md supersede the original usage, removal and recovery assumptions below.
+
 # harness-audit Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

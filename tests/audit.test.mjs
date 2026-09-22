@@ -136,7 +136,7 @@ import { usageClaude, usageCodex } from '../scripts/lib/usage.mjs';
 test('usageClaude counts skills, agents, mcp tools and servers inside the window only', async () => {
   const r = fx();
   const since = Date.now() - 30 * 86400e3;
-  const u = await usageClaude(path.join(r.claudeRoot, 'projects'), since);
+  const u = await usageClaude(path.join(r.claudeRoot, 'projects'), since, collectClaude(r));
   assert.equal(u.sessions, 2); // s1 + stale project s9; s0 is 45 days old
   assert.deepEqual(u.skills, { 'alpha:brainstorming': 2, grilling: 1 });
   assert.deepEqual(u.agents, { Explore: 1 });
@@ -145,15 +145,15 @@ test('usageClaude counts skills, agents, mcp tools and servers inside the window
   assert.equal(u.tools.Bash, 1);
 });
 
-test('usageCodex counts function calls, attributes servers, infers skills from SKILL.md paths', async () => {
+test('usageCodex counts function calls and ignores skill paths in tool output', async () => {
   const r = fx();
   const since = Date.now() - 30 * 86400e3;
-  const u = await usageCodex(path.join(r.codexRoot, 'sessions'), since, ['pal', 'basic-memory']);
+  const u = await usageCodex(path.join(r.codexRoot, 'sessions'), since, collectCodex(r));
   assert.equal(u.sessions, 1);
   assert.deepEqual(u.mcpServers, { pal: 2 });
   assert.deepEqual(u.mcpTools, { mcp__pal__chat: 1, pal__chat: 1 });
   assert.equal(u.tools.shell, 1);
-  assert.deepEqual(u.skills, { 'web-fetch-router': 1 });
+  assert.deepEqual(u.skills, {});
 });
 
 test('usage on missing dirs is empty', async () => {
@@ -169,7 +169,7 @@ test('startupCost counts loaded skills only and sums instruction files', () => {
   const c = collectClaude(r), k = collectCodex(r);
   const cost = startupCost(c, k);
   const loaded = c.skills.filter(s => s.loaded);
-  const expectSkills = loaded.reduce((n, s) => n + Math.ceil((s.id.length + Math.min(s.description.length, 300) + 6) / 4), 0);
+  const expectSkills = loaded.reduce((n, s) => n + Math.ceil((s.id.length + s.description.length + s.path.length + 6) / 4), 0);
   assert.equal(cost.claude.skillList, expectSkills);
   assert.equal(cost.claude.mcpToolNames, null);
   assert.equal(cost.claude.instructionFiles, c.instructionFiles.reduce((n, f) => n + f.tokensEst, 0));
@@ -179,18 +179,21 @@ test('startupCost counts loaded skills only and sums instruction files', () => {
   assert.equal(startupCost(null, k).claude, null);
 });
 
-test('extractFacts finds model/effort conflicts, unknown mcp server and disabled plugin mention', () => {
+test('extractFacts returns contextual candidates, not confirmed conflicts', () => {
   const r = fx();
   const facts = extractFacts(collectClaude(r), collectCodex(r));
   const by = Object.fromEntries(facts.map(f => [f.key, f]));
   assert.equal(by['codex.model'].config, 'gpt-6-astra');
-  assert.equal(by['codex.model'].conflict, true);
+  assert.equal(by['codex.model'].conflict, false);
+  assert.equal(by['codex.model'].candidate, true);
   assert.equal(by['codex.model'].mentions[0].value, 'gpt-5.6-terra');
   assert.equal(by['codex.model'].mentions[0].line, 3);
-  assert.equal(by['codex.effort'].conflict, true);
+  assert.equal(by['codex.effort'].conflict, false);
+  assert.equal(by['codex.effort'].candidate, true);
   assert.equal(by['codex.effort'].mentions[0].value, 'medium');
   assert.deepEqual(by['mcp.unknown-server'].mentions.map(m => m.value), ['ghost']);
-  assert.equal(by['mcp.unknown-server'].conflict, true);
+  assert.equal(by['mcp.unknown-server'].conflict, false);
+  assert.equal(by['mcp.unknown-server'].candidate, true);
   assert.deepEqual(by['plugin.disabled-but-mentioned'].mentions.map(m => m.value), ['beta']);
 });
 
@@ -210,7 +213,7 @@ test('runAudit assembles the full inventory', async () => {
   assert.equal(inv.usage.claude.skills['alpha:brainstorming'], 2);
   assert.equal(inv.usage.codex.mcpServers.pal, 2);
   assert.equal(inv.startupCost.claude.mcpToolNames, null);
-  assert.ok(inv.facts.find(f => f.key === 'codex.model').conflict);
+  assert.ok(inv.facts.find(f => f.key === 'codex.model').candidate);
   assert.ok(Array.isArray(inv.warnings));
 });
 
@@ -219,7 +222,7 @@ test('CLI writes inventory.json to --out and prints a summary', () => {
   const out = execFileSync('node', [AUDIT, '--home', r.home, '--out', r.out, '--cwd', r.cwd], { encoding: 'utf8' });
   assert.match(out, /inventory written to/);
   assert.match(out, /Claude Code\s+skills 8 loaded \(1 in disabled plugins\)/);
-  assert.match(out, /Codex CLI\s+skills 1/);
+  assert.match(out, /Codex CLI\s+skills 1 enabled/);
   assert.match(out, /model gpt-6-astra \/ high/);
   const inv = JSON.parse(fs.readFileSync(path.join(r.out, 'inventory.json'), 'utf8'));
   assert.equal(inv.claude.plugins.length, 3);

@@ -9,6 +9,7 @@ import { buildFixture } from './helpers/fixture.mjs';
 import { createBackup, restoreBackup, listBackups } from '../scripts/lib/backup.mjs';
 import { applyItem } from '../scripts/lib/actions.mjs';
 import { parseToml } from '../scripts/lib/toml.mjs';
+import { snapshotTargets } from '../scripts/lib/snapshot.mjs';
 
 const APPLY = path.resolve('scripts/apply.mjs');
 const fx = () => buildFixture(fs.mkdtempSync(path.join(os.tmpdir(), 'ha-apply-')));
@@ -19,7 +20,34 @@ const rootFlags = r => ['--home', r.home, '--out', r.out, '--cwd', r.cwd];
 function writePlan(r, items) {
   fs.mkdirSync(r.out, { recursive: true });
   const p = path.join(r.out, 'plan.json');
-  fs.writeFileSync(p, JSON.stringify(items));
+  const normalized = items.map(item => {
+    if (item.action === 'disable-plugin') return { ...item, source: item.source ?? `plugin:${item.target}`, enabledSource: item.enabledSource ?? 'settings.json', enabledPath: item.enabledPath ?? path.join(r.claudeRoot, 'settings.json') };
+    if (item.action === 'remove-skill' || item.action === 'remove-agent') return { ...item, source: item.source ?? 'user' };
+    if (item.action === 'remove-mcp') {
+      const source = item.source ?? (item.harness === 'codex' ? 'config.toml' : '~/.claude.json');
+      const paths = { '~/.claude.json': r.claudeJson, 'settings.json': path.join(r.claudeRoot, 'settings.json'), 'settings.local.json': path.join(r.claudeRoot, 'settings.local.json'), 'config.toml': path.join(r.codexRoot, 'config.toml') };
+      return { ...item, source, path: item.path ?? paths[source] };
+    }
+    if (item.action === 'remove-hook') return { ...item, source: item.source ?? 'settings.json', event: item.event ?? 'PreToolUse', matcher: item.matcher ?? 'Bash' };
+    if (item.action === 'delete-clutter') return { ...item, source: item.source ?? `${item.harness}.clutter` };
+    if (item.action === 'prune-codex-projects') return { ...item, source: item.source ?? `${item.harness}.clutter`, paths: item.paths ?? ['/nope/dead'] };
+    return item;
+  });
+  const generatedAt = new Date().toISOString();
+  const inventory = { generatedAt, cwd: r.cwd, claude: { root: r.claudeRoot, plugins: [], skills: [], agents: [], mcpServers: [], hooks: {}, clutter: [] }, codex: { root: r.codexRoot, plugins: [], skills: [], agents: [], mcpServers: [], hooks: {}, clutter: [] } };
+  for (const item of normalized) {
+    const h = inventory[item.harness];
+    if (item.action === 'disable-plugin') h.plugins.push({ name: item.target, enabledSource: item.enabledSource, enabledPath: item.enabledPath });
+    if (item.action === 'remove-skill') h.skills.push({ source: item.source, path: path.join(item.path, 'SKILL.md') });
+    if (item.action === 'remove-agent') h.agents.push({ source: item.source, path: item.path });
+    if (item.action === 'remove-mcp') h.mcpServers.push({ name: item.target, source: item.source, path: item.path });
+    if (item.action === 'remove-hook') (h.hooks[item.event] ??= []).push({ command: item.target, matcher: item.matcher, source: item.source, path: item.path });
+    if (item.action === 'delete-clutter') h.clutter.push({ path: item.path });
+    if (item.action === 'prune-codex-projects') for (const dead of item.paths) h.clutter.push({ kind: 'dead-project-entry', path: `${path.join(r.codexRoot, 'config.toml')}#projects.${dead}` });
+  }
+  inventory.targetSnapshots = snapshotTargets(inventory.claude, inventory.codex, []);
+  fs.writeFileSync(p, JSON.stringify({ generatedAt, cwd: r.cwd, items: normalized }));
+  fs.writeFileSync(path.join(r.out, 'inventory.json'), JSON.stringify(inventory));
   return p;
 }
 
@@ -75,7 +103,7 @@ test('backup: restore refuses a move entry whose original path was recreated, un
 test('actions: disable-plugin flips only the target flag', () => {
   const r = fx();
   const b = createBackup(r.out, 's');
-  const res = applyItem({ id: 'P1', action: 'disable-plugin', target: 'alpha', harness: 'claude', manual: false }, r, b);
+  const res = applyItem({ id: 'P1', action: 'disable-plugin', target: 'alpha', harness: 'claude', source: 'plugin:alpha', enabledSource: 'settings.json', enabledPath: path.join(r.claudeRoot, 'settings.json'), manual: false }, r, b);
   const s = readJson(path.join(r.claudeRoot, 'settings.json'));
   assert.equal(s.enabledPlugins['alpha@mk'], false);
   assert.equal(s.enabledPlugins['beta@mk'], false);
@@ -86,8 +114,8 @@ test('actions: disable-plugin flips only the target flag', () => {
 test('actions: disable-plugin re-applied after already disabled is idempotent', () => {
   const r = fx();
   const b = createBackup(r.out, 's');
-  applyItem({ id: 'P1', action: 'disable-plugin', target: 'alpha', harness: 'claude', manual: false }, r, b);
-  const res = applyItem({ id: 'P1b', action: 'disable-plugin', target: 'alpha', harness: 'claude', manual: false }, r, b);
+  applyItem({ id: 'P1', action: 'disable-plugin', target: 'alpha', harness: 'claude', source: 'plugin:alpha', enabledSource: 'settings.json', enabledPath: path.join(r.claudeRoot, 'settings.json'), manual: false }, r, b);
+  const res = applyItem({ id: 'P1b', action: 'disable-plugin', target: 'alpha', harness: 'claude', source: 'plugin:alpha', enabledSource: 'settings.json', enabledPath: path.join(r.claudeRoot, 'settings.json'), manual: false }, r, b);
   assert.deepEqual(res, { changed: [], note: 'already disabled' });
 });
 
@@ -95,7 +123,7 @@ test('actions: disable-plugin throws when no matching key exists at all', () => 
   const r = fx();
   const b = createBackup(r.out, 's');
   assert.throws(
-    () => applyItem({ id: 'PX', action: 'disable-plugin', target: 'nope', harness: 'claude', manual: false }, r, b),
+    () => applyItem({ id: 'PX', action: 'disable-plugin', target: 'nope', harness: 'claude', source: 'plugin:nope', enabledSource: 'settings.json', enabledPath: path.join(r.claudeRoot, 'settings.json'), manual: false }, r, b),
     /plugin nope not found in settings\.json/
   );
 });
@@ -103,27 +131,27 @@ test('actions: disable-plugin throws when no matching key exists at all', () => 
 test('actions: remove-mcp claude removes from ~/.claude.json, codex removes toml block', () => {
   const r = fx();
   const b = createBackup(r.out, 's');
-  applyItem({ id: 'P2', action: 'remove-mcp', target: 'pal', harness: 'claude', manual: false }, r, b);
+  applyItem({ id: 'P2', action: 'remove-mcp', target: 'pal', path: r.claudeJson, harness: 'claude', source: '~/.claude.json', manual: false }, r, b);
   assert.equal(readJson(r.claudeJson).mcpServers.pal, undefined);
   assert.ok(readJson(r.claudeJson).projects);
-  applyItem({ id: 'P3', action: 'remove-mcp', target: 'pal', harness: 'codex', manual: false }, r, b);
+  applyItem({ id: 'P3', action: 'remove-mcp', target: 'pal', path: path.join(r.codexRoot, 'config.toml'), harness: 'codex', source: 'config.toml', manual: false }, r, b);
   const toml = fs.readFileSync(path.join(r.codexRoot, 'config.toml'), 'utf8');
   assert.doesNotMatch(toml, /mcp_servers\.pal/);
   assert.match(toml, /\[mcp_servers\.basic-memory\]/);
   assert.equal(parseToml(toml).model, 'gpt-6-astra');
 });
 
-test('actions: remove-mcp claude removes the key from every file that contains it', () => {
+test('actions: remove-mcp claude removes only the source-qualified key', () => {
   const r = fx();
   const settingsPath = path.join(r.claudeRoot, 'settings.json');
   const settings = readJson(settingsPath);
   settings.mcpServers.pal = { command: 'uvx', args: ['pal-mcp'] };
   fs.writeFileSync(settingsPath, JSON.stringify(settings));
   const b = createBackup(r.out, 's');
-  const res = applyItem({ id: 'P2b', action: 'remove-mcp', target: 'pal', harness: 'claude', manual: false }, r, b);
-  assert.equal(res.changed.length, 2);
+  const res = applyItem({ id: 'P2b', action: 'remove-mcp', target: 'pal', path: r.claudeJson, harness: 'claude', source: '~/.claude.json', manual: false }, r, b);
+  assert.equal(res.changed.length, 1);
   assert.equal(readJson(r.claudeJson).mcpServers.pal, undefined);
-  assert.equal(readJson(settingsPath).mcpServers.pal, undefined);
+  assert.ok(readJson(settingsPath).mcpServers.pal);
 });
 
 test('actions: remove-skill given the SKILL.md path moves the whole directory', () => {
@@ -131,7 +159,7 @@ test('actions: remove-skill given the SKILL.md path moves the whole directory', 
   const b = createBackup(r.out, 's');
   const skillDir = path.join(r.claudeRoot, 'skills', 'grilling');
   const skillMd = path.join(skillDir, 'SKILL.md');
-  const res = applyItem({ id: 'P4a', action: 'remove-skill', path: skillMd, harness: 'claude', manual: false }, r, b);
+  const res = applyItem({ id: 'P4a', action: 'remove-skill', path: skillMd, harness: 'claude', source: 'user', manual: false }, r, b);
   assert.equal(fs.existsSync(skillDir), false);
   assert.deepEqual(res.changed, [skillDir]);
 });
@@ -140,13 +168,13 @@ test('actions: remove-skill and delete-clutter move to backup; remove-hook drops
   const r = fx();
   const b = createBackup(r.out, 's');
   const skill = path.join(r.claudeRoot, 'skills', 'grilling');
-  applyItem({ id: 'P4', action: 'remove-skill', path: skill, harness: 'claude', manual: false }, r, b);
+  applyItem({ id: 'P4', action: 'remove-skill', path: skill, harness: 'claude', source: 'user', manual: false }, r, b);
   assert.equal(fs.existsSync(skill), false);
   const bak = path.join(r.claudeRoot, 'settings.json.bak-1');
-  applyItem({ id: 'P5', action: 'delete-clutter', path: bak, harness: 'claude', manual: false }, r, b);
+  applyItem({ id: 'P5', action: 'delete-clutter', path: bak, harness: 'claude', source: 'claude.clutter', manual: false }, r, b);
   assert.equal(fs.existsSync(bak), false);
   const settings = path.join(r.claudeRoot, 'settings.json');
-  applyItem({ id: 'P6', action: 'remove-hook', target: 'node guard2.js', path: settings, harness: 'claude', manual: false }, r, b);
+  applyItem({ id: 'P6', action: 'remove-hook', target: 'node guard2.js', event: 'PreToolUse', matcher: 'Bash', path: settings, harness: 'claude', source: 'settings.json', manual: false }, r, b);
   const s = readJson(settings);
   assert.deepEqual(s.hooks.PreToolUse.flatMap(g => g.hooks.map(h => h.command)), ['node guard1.js', 'node guard3.js']);
   b.finish();
@@ -156,7 +184,7 @@ test('actions: remove-skill and delete-clutter move to backup; remove-hook drops
 test('actions: prune-codex-projects removes only dead entries', () => {
   const r = fx();
   const b = createBackup(r.out, 's');
-  applyItem({ id: 'P7', action: 'prune-codex-projects', harness: 'codex', manual: false }, r, b);
+  applyItem({ id: 'P7', action: 'prune-codex-projects', harness: 'codex', source: 'codex.clutter', paths: ['/nope/dead'], manual: false }, r, b);
   const t = parseToml(fs.readFileSync(path.join(r.codexRoot, 'config.toml'), 'utf8'));
   assert.deepEqual(Object.keys(t.projects), [r.cwd]);
 });
@@ -173,7 +201,7 @@ test('actions: applyItem refuses a path outside the harness roots', () => {
   fs.writeFileSync(path.join(outside, 'f.txt'), 'x');
   const b = createBackup(r.out, 's');
   assert.throws(
-    () => applyItem({ id: 'X', action: 'remove-skill', path: outside, harness: 'claude', manual: false }, r, b),
+    () => applyItem({ id: 'X', action: 'remove-skill', path: outside, harness: 'claude', source: 'user', manual: false }, r, b),
     /outside harness roots/
   );
   assert.equal(fs.existsSync(outside), true);
@@ -188,7 +216,7 @@ test('actions: applyItem refuses a symlink whose target escapes the harness root
   fs.symlinkSync(outside, path.join(r.claudeRoot, 'skills', 'linked'), 'dir');
   const b = createBackup(r.out, 's');
   assert.throws(
-    () => applyItem({ id: 'X', action: 'delete-clutter', path: path.join(r.claudeRoot, 'skills', 'linked', 'file.txt'), harness: 'claude', manual: false }, r, b),
+    () => applyItem({ id: 'X', action: 'delete-clutter', path: path.join(r.claudeRoot, 'skills', 'linked', 'file.txt'), harness: 'claude', source: 'claude.clutter', manual: false }, r, b),
     /outside harness roots/
   );
   assert.equal(fs.existsSync(outsideFile), true);
