@@ -58,7 +58,7 @@ Usage comes from Claude project transcripts and Codex session rollouts. Each eve
 - Scripts perform no direct network uploads or telemetry. The audit invokes `claude --version` and `codex --version`; those programs may touch their own state.
 - Model-assisted reporting reads metadata and selected instructions into the active assistant conversation, subject to that assistant's normal data handling. Treat inventory as private: paths, server commands and URLs may contain sensitive information.
 - Report mode writes only under `--out` (default `~/.harness-audit`). It does not edit harness settings.
-- Apply validates selected items against the fresh inventory and supported source, then checks live filesystem metadata fingerprints before mutation. Changed targets require a new audit. Instruction files and the audit skill itself are protected. Unsupported scopes require manual changes.
+- Apply validates selected items against the fresh inventory and supported source, then checks live filesystem metadata fingerprints before mutation. MCP servers in JSON configs are compared by their own entry, because Claude Code rewrites `~/.claude.json` while it runs. Changed targets require a new audit. Instruction files and the audit skill itself are protected. Unsupported scopes require manual changes.
 - Backup payloads use unique names and recovery metadata is persisted as changes happen. Undo refuses files changed after apply; `--force` explicitly permits overwriting conflicts. Errors and partial recovery are reported.
 - Unsupported TOML syntax is warned about during inventory; destructive TOML edits refuse documents they cannot safely parse. Moving a directory across filesystems may fail and is reported rather than silently deleted.
 

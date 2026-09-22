@@ -62,7 +62,7 @@ Supported action names: `disable-plugin`, `remove-skill`, `remove-agent`, `remov
 
 ## Apply and recovery
 
-Only explicitly approved IDs are runnable. The executor validates plan shape, freshness, source, exact inventoried targets and protected paths before changing files. Live filesystem metadata fingerprints (including recursive directory entries) must match the saved inventory, even for a plan less than 24 hours old. Instruction files, this skill and its recovery directory are never cleanup targets. Config symlinks must not redirect edits outside supported roots.
+Only explicitly approved IDs are runnable. The executor validates plan shape, freshness, source, exact inventoried targets and protected paths before changing files. Live filesystem metadata fingerprints (including recursive directory entries) must match the saved inventory, even for a plan less than 24 hours old. An MCP server in a JSON config is compared by its entry content instead, because Claude Code rewrites `~/.claude.json` continuously. Instruction files, this skill and its recovery directory are never cleanup targets. Config symlinks must not redirect edits outside supported roots.
 
 Backup payload names are unique. Recovery metadata is persisted as operations progress so interruption does not hide completed moves. Edited files retain post-apply content fingerprints; undo refuses later changes, including edits immediately after apply. Force restoration requires explicit approval of overwriting conflicts.
 

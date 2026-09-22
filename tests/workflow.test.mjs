@@ -66,3 +66,44 @@ test('apply refuses replacement skill contents even within the 24-hour approval 
   assert.equal(fs.readFileSync(skill.path, 'utf8'), 'replacement installed after approval');
   assert.equal(fs.existsSync(path.join(r.out, 'backups')), false);
 });
+
+async function approvedClaudeJsonServer(t) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ha-claude-json-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const r = buildFixture(tmp);
+  const inventory = await runAudit(r);
+  const server = inventory.claude.mcpServers.find(s => s.name === 'pal' && s.source === '~/.claude.json');
+  const item = { id: 'P1', action: 'remove-mcp', harness: 'claude', source: server.source, target: server.name, path: server.path, reason: 'approved', manual: false };
+  fs.mkdirSync(r.out, { recursive: true });
+  fs.writeFileSync(path.join(r.out, 'inventory.json'), JSON.stringify(inventory));
+  const plan = path.join(r.out, 'plan.json');
+  fs.writeFileSync(plan, JSON.stringify({ generatedAt: inventory.generatedAt, cwd: r.cwd, items: [item] }));
+  // Claude Code saves ~/.claude.json with a fresh file every few seconds while it runs.
+  const rewrite = mutate => {
+    const config = JSON.parse(fs.readFileSync(r.claudeJson, 'utf8'));
+    mutate(config);
+    fs.writeFileSync(`${r.claudeJson}.tmp`, JSON.stringify(config, null, 2));
+    fs.renameSync(`${r.claudeJson}.tmp`, r.claudeJson);
+  };
+  const apply = () => spawnSync(process.execPath, [path.resolve('scripts/apply.mjs'), '--plan', plan, '--ids', 'P1', '--yes', '--home', r.home, '--cwd', r.cwd, '--out', r.out], { encoding: 'utf8' });
+  return { r, rewrite, apply };
+}
+
+test('apply removes an approved ~/.claude.json server after Claude Code rewrites unrelated state', async t => {
+  const { r, rewrite, apply } = await approvedClaudeJsonServer(t);
+  rewrite(config => { config.numStartups = 42; });
+  const result = apply();
+  assert.equal(result.status, 0, result.stderr);
+  const config = JSON.parse(fs.readFileSync(r.claudeJson, 'utf8'));
+  assert.equal(config.mcpServers.pal, undefined);
+  assert.equal(config.numStartups, 42);
+});
+
+test('apply refuses an approved ~/.claude.json server whose own entry changed', async t => {
+  const { r, rewrite, apply } = await approvedClaudeJsonServer(t);
+  rewrite(config => { config.mcpServers.pal.args = ['replacement']; });
+  const result = apply();
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /target changed since the audit/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(r.claudeJson, 'utf8')).mcpServers.pal.args, ['replacement']);
+});

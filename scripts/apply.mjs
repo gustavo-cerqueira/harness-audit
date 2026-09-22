@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs, resolveRoots } from './lib/args.mjs';
 import { createBackup, restoreBackup, listBackups } from './lib/backup.mjs';
 import { applyItem, MANUAL_ACTIONS } from './lib/actions.mjs';
-import { targetSnapshot } from './lib/snapshot.mjs';
+import { jsonServerEntry, serverKey, serverSnapshot, targetSnapshot } from './lib/snapshot.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const refuse = (msg) => { console.error(`refused: ${msg}`); process.exit(2); };
@@ -22,12 +22,20 @@ function readJson(file, label) {
 function samePath(a, b) { return path.resolve(a) === path.resolve(b); }
 
 function checkTargetSnapshots(items, inventory) {
-  const targets = new Set(items.map(item => item.action === 'disable-plugin' ? item.enabledPath
-    : item.action === 'prune-codex-projects' ? path.join(inventory.codex.root, 'config.toml') : item.path));
-  for (const target of targets) {
+  const checks = new Map();
+  for (const item of items) {
+    if (item.action === 'remove-mcp' && typeof item.path === 'string' && jsonServerEntry(item.source, item.path)) {
+      checks.set(serverKey(item.path, item.target), () => serverSnapshot(item.path, item.target));
+      continue;
+    }
+    const target = item.action === 'disable-plugin' ? item.enabledPath
+      : item.action === 'prune-codex-projects' ? path.join(inventory.codex.root, 'config.toml') : item.path;
     if (typeof target !== 'string') throw new Error('plan target has no snapshot; rerun the audit');
-    const saved = inventory.targetSnapshots?.[path.resolve(target)];
-    if (!saved || saved !== targetSnapshot(target)) throw new Error(`target changed since the audit: ${target}; rerun the audit`);
+    checks.set(path.resolve(target), () => targetSnapshot(target));
+  }
+  for (const [key, current] of checks) {
+    const saved = inventory.targetSnapshots?.[key];
+    if (!saved || saved !== current()) throw new Error(`target changed since the audit: ${key}; rerun the audit`);
   }
 }
 
